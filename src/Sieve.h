@@ -134,10 +134,15 @@ class Sieve {
      *         or NULL if no such prime was found
      */
    void run_sieve(PoW *pow, vector<uint8_t> *offset);
+
+      /** expose the configured prime count */
+      sieve_t get_prime_count() const { return n_primes; }
+
+      /** expose the generated prime list */
+      const sieve_t *get_primes() const { return primes; }
  
-    /**
-     * returns the primes per seconds
-     */
+    
+   
     double primes_per_sec();
 
     /**
