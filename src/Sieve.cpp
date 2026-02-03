@@ -49,7 +49,11 @@ Sieve::Sieve(PoWProcessor *pprocessor, uint64_t n_primes, uint64_t sievesize) {
   this->passed_time      = 1;
   this->cur_found_primes = 0;
   this->cur_passed_time  = 1;
-  this->sieve            = (sieve_t *) malloc(this->sievesize / 8);
+  size_t sieve_bytes = this->sievesize / 8;
+  void *sieve_buf = nullptr;
+  if (posix_memalign(&sieve_buf, 64, sieve_bytes) != 0)
+    sieve_buf = malloc(sieve_bytes);
+  this->sieve            = (sieve_t *) sieve_buf;
   this->primes           = (sieve_t *) malloc(sizeof(sieve_t) * n_primes);
   this->primes2          = (sieve_t *) malloc(sizeof(sieve_t) * n_primes);
   this->starts           = (sieve_t *) malloc(sizeof(sieve_t) * n_primes);
@@ -139,30 +143,38 @@ void Sieve::run_sieve(PoW *pow, vector<uint8_t> *offset) {
   sieve_t i          = 1;
   sieve_t start      = sievesize + 4;
 
-  sieve_t offset3 = 3 - mpz_tdiv_ui(mpz_start, 3);
-  sieve_t offset5 = 5 - mpz_tdiv_ui(mpz_start, 5);
-  sieve_t offset7 = 7 - mpz_tdiv_ui(mpz_start, 7);
+  const uint32_t base3 = mpz_tdiv_ui(mpz_start, 3);
+  const uint32_t base5 = mpz_tdiv_ui(mpz_start, 5);
+  const uint32_t base7 = mpz_tdiv_ui(mpz_start, 7);
 
-  // x mod n == 0: no offset, set to 0
-  if (offset3 == 3) offset3 = 0;
-  if (offset5 == 5) offset5 = 0;
-  if (offset7 == 7) offset7 = 0;
+  auto advance_res = [](uint32_t res, uint32_t mod, uint64_t delta) {
+    delta %= mod;
+    res += static_cast<uint32_t>(delta);
+    if (res >= mod)
+      res -= mod;
+    return res;
+  };
+
+  uint32_t res3 = (base3 + 1u) % 3u;
+  uint32_t res5 = (base5 + 1u) % 5u;
+  uint32_t res7 = (base7 + 1u) % 7u;
 
   /* find the first prime */
-  for (/* declared */; i < sievesize; i += 2) {
-    
+  while (i < sievesize) {
     if (is_prime(sieve, i)) {
-      if((i % 3) == offset3) continue;
-      if((i % 5) == offset5) continue;
-      if((i % 7) == offset7) continue;
+      if (res3 != 0u && res5 != 0u && res7 != 0u) {
+        cur_tests++;
+        tests++;
+        mpz_add_ui(mpz_tmp, mpz_start, i);
 
-      cur_tests++;
-      tests++;
-      mpz_add_ui(mpz_tmp, mpz_start, i);
-
-      if (fermat_test(mpz_tmp))
-        break;
+        if (fermat_test(mpz_tmp))
+          break;
+      }
     }
+    i += 2;
+    res3 = advance_res(res3, 3u, 2u);
+    res5 = advance_res(res5, 5u, 2u);
+    res7 = advance_res(res7, 7u, 2u);
   }
 
   start = i;
@@ -178,24 +190,34 @@ void Sieve::run_sieve(PoW *pow, vector<uint8_t> *offset) {
     for (/* declared */; i > start; i -= 2) {
 
       if (is_prime(sieve, i)) {
-        if((i % 3) == offset3) continue;
-        if((i % 5) == offset5) continue;
-        if((i % 7) == offset7) continue;
-
-        n_test++;
-        mpz_add_ui(mpz_tmp, mpz_start, i);
+        if (res3 != 0u && res5 != 0u && res7 != 0u) {
+          n_test++;
+          mpz_add_ui(mpz_tmp, mpz_start, i);
      
-        if (fermat_test(mpz_tmp)) {
-          start = i;
-          i += min_len + 2;
-          gap_count++;
+          if (fermat_test(mpz_tmp)) {
+            start = i;
+            /* adjust residues to new i after jump below */
+            i += min_len + 2;
+            res3 = advance_res(res3, 3u, (min_len + 2));
+            res5 = advance_res(res5, 5u, (min_len + 2));
+            res7 = advance_res(res7, 7u, (min_len + 2));
+            gap_count++;
 
-          if (i >= sievesize) {
-            i = 2;
-            finished = true;
+            if (i >= sievesize) {
+              i = 2;
+              res3 = advance_res(res3, 3u, (2 % 3u));
+              res5 = advance_res(res5, 5u, (2 % 5u));
+              res7 = advance_res(res7, 7u, (2 % 7u));
+              finished = true;
+            }
           }
         }
       }
+
+      /* step residues backwards by 2 to match i -= 2 */
+      res3 = advance_res(res3, 3u, 1u);  // -2 mod 3 == +1
+      res5 = advance_res(res5, 5u, 3u);  // -2 mod 5 == +3
+      res7 = advance_res(res7, 7u, 5u);  // -2 mod 7 == +5
     }
 
     if (!finished) {
@@ -210,7 +232,12 @@ void Sieve::run_sieve(PoW *pow, vector<uint8_t> *offset) {
           i = sievesize;
       }
 
-      i += min_len << 1;
+      /* advance i forward by min_len<<1 (even), update residues accordingly */
+      const uint64_t forward = (static_cast<uint64_t>(min_len) << 1);
+      i += forward;
+      res3 = advance_res(res3, 3u, forward);
+      res5 = advance_res(res5, 5u, forward);
+      res7 = advance_res(res7, 7u, forward);
     }
   }
 
